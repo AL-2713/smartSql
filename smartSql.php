@@ -1,7 +1,8 @@
 <?php
 
 // Build SQL queries from an object
-// Version: 1
+// Version: 1.1
+// Fixed NULL variable handling in buildConditionParams
 
 class smartSql {
 
@@ -203,7 +204,7 @@ class smartSql {
     // Return the WHERE conditions as a string, if configured
     private function buildConditionParams() {
 
-        $invertStr = array("WHERE"=>" !", "LIKE"=>" NOT");
+        $invertStrTypes = array("WHERE"=>" !", "LIKE"=>" NOT");
 
         $whereData = "";
         $whereLen = count($this->WHERE);
@@ -220,7 +221,7 @@ class smartSql {
                     $whereData .= $clause['column'];
                     
                     // If false, invert the search to where the condition is false
-                    $invertStr = $clause['trueOp'] ? "" : $invertStr[$whereCond];
+                    $invertStr = $clause['trueOp'] ? "" : $invertStrTypes[$whereCond];
                     $whereData .= $invertStr;
 
                     // Set condition depending on condType
@@ -231,7 +232,7 @@ class smartSql {
                         
                         case "WHERE":
                         default:
-                            if ($clause['value'] == null) {
+                            if (gettype($clause['value']) == "NULL") {
                                 $whereData .= " IS NULL";
                             
                             } else {
