@@ -1,22 +1,27 @@
 <?php
 
 // Build SQL queries from an object
-// Version: 1.1
+// Version: 1.5
+// Added support for INSERT queries / support for building queries with values seperated in an array
+// Support for multible ORDER conditions
+// Added > and < for WHERE conditions
+// Added OR condition
 // Fixed NULL variable handling in buildConditionParams
 
 class smartSql {
 
     private $WHERE;
-    private $TABLE;
+    public $TABLE;
     private $STATEMENT;
     private $LIMIT;
     private $OFFSET;
-    private $ORDER;
+    public $ORDER;
     private $SET;
     private $SELECT_VALUES;
+    private $INSERTS;
 
-    const SUPPORTED_STATEMENTS = ["SELECT", "UPDATE"];
-    const SUPPORTED_CONDITION_TYPES = ["WHERE", "LIKE"];
+    const SUPPORTED_STATEMENTS = ["SELECT", "UPDATE", "INSERT"];
+    const SUPPORTED_CONDITION_TYPES = ["WHERE", "LIKE", "GREATER", "LESSER", ">", "<", "="];
     const VALID_ORDERS = ['ASC', 'DESC'];
 
 
@@ -31,9 +36,27 @@ class smartSql {
         $this->TABLE = $table;
         $this->WHERE = array();
         $this->SET = array();
+        $this->ORDER = array();
+        $this->INSERTS = array();
         $this->SELECT_VALUES = "*";
+		$this->conditionOR = false;
+        $this->VALUE_ARRAY = array();
 
     }
+	
+	function clearVar($var) {
+		switch(strtoupper($var)) {
+			case "ORDER":
+				$this->ORDER = array();
+				break;
+			
+			case "LIMIT":
+				unset($this->LIMIT);
+				unset($this->OFFSET);
+				break;
+		}
+	}
+
 
     // Add a WHERE condition to the object
     /*
@@ -57,12 +80,14 @@ class smartSql {
 
     // Set the ORDER BY variables
     public function initOrder($keyword, $order = null) {
-        $order = strtoupper($order);
-        $this->ORDER['keyword'] = $keyword;
+        $orderObj = array();
+		$orderObj['keyword'] = $keyword;
         
         if (in_array($order, self::VALID_ORDERS)) {
-            $this->ORDER['order'] = $order;
+			$order = strtoupper($order);
+			$orderObj['order'] = $order;
         }
+		$this->ORDER[] = $orderObj;
     }
 
     
@@ -105,22 +130,51 @@ class smartSql {
         $this->SET[$i]['column'] = $column;
         $this->SET[$i]['value'] = $value;
     }
+    
+    // Add an insert value param. Only used for INSERT queries
+    public function initInsert($column, $value) {
+        if ($this->STATEMENT != "INSERT") {
+            $this->smartSqlError("INSERT conditions are only for INSERT queries, not '$this->STATEMENT'");
+            return;
+        }
+
+        $i = count($this->INSERTS);
+        $this->INSERTS[$i]['column'] = $column;
+        $this->INSERTS[$i]['value'] = $value;
+    }
+	
+	// Enable whether to add WHERE conditions with the OR condition
+	public function initOR($switchBool) {
+		$this->conditionOR = $switchBool;
+	}
 
     // Return the query string from the configures variables
-    public function build() {
+    public function build($seperateValues = false) {
+        $this->SEPERATE_VALUES = $seperateValues;
+        $finalQuery = "";
 
         switch($this->STATEMENT) {
             case "SELECT":
-                return "$this->STATEMENT ".$this->buildSelectParams()." FROM $this->TABLE " . $this->buildConditionParams() . $this->buildOrder() . $this->buildLimitParams();
+                $finalQuery = "$this->STATEMENT ".$this->buildSelectParams()." FROM $this->TABLE " . $this->buildConditionParams() . $this->buildOrder() . $this->buildLimitParams();
                 break;
             
             case "UPDATE":
                 if (count($this->SET) == 0) {
                     $this->smartSqlError("SET values are required when building an UPDATE query");
                 } else {
-                    return "$this->STATEMENT $this->TABLE SET " . $this->buildSetParams() . " " . $this->buildConditionParams();
+                    $finalQuery = "$this->STATEMENT $this->TABLE SET " . $this->buildSetParams() . " " . $this->buildConditionParams();
                 }
+            
+            case "INSERT":
+                $finalQuery = "$this->STATEMENT INTO $this->TABLE " . $this->buildInsertParams();
+                break;
         }
+
+        if ($seperateValues) {
+            return [$finalQuery, $this->VALUE_ARRAY];
+        }
+
+        return $finalQuery;
     }
 
 
@@ -128,6 +182,32 @@ class smartSql {
     // Basic warning message if display_errors is enabled
     private function smartSqlError($errorMsg) {
         trigger_error("[smartSql]: " . $errorMsg);
+    }
+
+    private function returnQueryValue($value) {
+        if ($this->SEPERATE_VALUES) {
+            $this->VALUE_ARRAY[] = $value;
+            return "?";
+        }
+        
+        return '"' . str_replace('"', '""', $value) . '"';
+    }
+    
+    // Return the INSERT params as a full string. Only for INSERT queries
+    private function buildInsertParams() {
+        $insertColumns = "";
+        $insertValues = "";
+        $i = 1;
+        foreach ($this->INSERTS as $insertObj) {
+            $comma = $i < count($this->INSERTS) ? ", " : "";
+
+            $insertColumns .= $insertObj['column'] . $comma;
+            $insertValues .= $this->returnQueryValue($insertObj['value']) . $comma;
+
+            $i++;
+        }
+
+        return "($insertColumns) VALUES ($insertValues)";
     }
 
     
@@ -138,7 +218,7 @@ class smartSql {
         $i = 1;
         foreach ($this->SET as $setEntry) {
             $comma = $i < count($this->SET) ? ", " : "";
-            $setData .= $setEntry['column'] . ' = "' . str_replace('"', '""', $setEntry['value']) . '"' . $comma;
+            $setData .= $setEntry['column'] . ' = ' . $this->returnQueryValue($setEntry['value']) . $comma;
             $i++;
         }
 
@@ -190,13 +270,24 @@ class smartSql {
     // Return the ORDER condition as a string, if configured
     private function buildOrder() {
         $orderData = "";
-        if ($this->ORDER['keyword']) {
-            $orderData .= " ORDER BY " . $this->ORDER['keyword'];
+		
+		if (count($this->ORDER) > 0) {
+			$orderData .= " ORDER BY ";
+			$i = 1;
+			foreach ($this->ORDER as $orderObj) {
+				$orderData .= $orderObj['keyword'];
+				
+				if (in_array($orderObj['order'], self::VALID_ORDERS)) {
+					$orderData .= " ". $orderObj['order'];
+				}
 
-            if (in_array($this->ORDER['order'], self::VALID_ORDERS)) {
-                $orderData .= " ". $this->ORDER['order'];
-            }
-        }
+				if ($i < count($this->ORDER)) {
+					$orderData .= ", ";
+				}
+				
+				$i++;
+			}
+		}
 
         return $orderData;
     }
@@ -216,7 +307,6 @@ class smartSql {
             while ($i < $whereLen) {
                 
                 foreach ($this->WHERE as $clause) {
-                    $whereVal = str_replace('"', '""', $clause['value']);
                     $whereCond = strtoupper($clause['condType']);
                     $whereData .= $clause['column'];
                     
@@ -227,16 +317,28 @@ class smartSql {
                     // Set condition depending on condType
                     switch ($whereCond) {
                         case "LIKE":
+                            $whereVal = str_replace('"', '""', $clause['value']);
                             $whereData .= " LIKE \"%$whereVal%\"";
                             break;
+						
+						case ">":
+						case "GREATER":
+							$whereData .= " > " . $clause['value'];
+							break;
+						
+						case "<":
+						case "LESSER":
+							$whereData .= " < " . $clause['value'];
+							break;
                         
+						case "=":
                         case "WHERE":
                         default:
                             if (gettype($clause['value']) == "NULL") {
                                 $whereData .= " IS NULL";
                             
                             } else {
-                                $whereData .= "=\"$whereVal\"";
+                                $whereData .= "=" . $this->returnQueryValue($clause['value']);
                             }
                             
                             break;
@@ -245,7 +347,8 @@ class smartSql {
                     $i++;
 
                     if ($i < $whereLen) {
-                        $whereData .= " AND ";
+						$sepCondition = $this->conditionOR ? " OR " : " AND ";
+                        $whereData .= $sepCondition;
                     }
                 }
             }
